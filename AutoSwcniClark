@@ -1,5 +1,6 @@
---// WAR + RACE MODE
---// Standalone Player Movement Script
+--// PLAYER MOVEMENT - WAR + RACE
+--// Continuous Tween Follow
+--// No Anchored / No WeldConstraint
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -8,114 +9,81 @@ local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 --==================================================
--- SETTINGS
+-- CONFIG
 --==================================================
 
 local TWEEN_SPEED = 90
-local ANCHOR_TIME = 2
-local DISTANCE_FROM_PLAYER = 3
+local FOLLOW_DISTANCE = 3
 
-local warEnabled = false
-local raceEnabled = false
+-- How long WAR follows each player
+local WAR_FOLLOW_TIME = 2
 
-local stopRequested = false
-local currentTween = nil
-local currentWeld = nil
-local currentTarget = nil
+-- How often the destination is refreshed
+local UPDATE_INTERVAL = 0.08
 
 --==================================================
--- CHARACTER
+-- STATE
 --==================================================
 
-local function getCharacter()
-    local character = LocalPlayer.Character
+local WarEnabled = false
+local RaceEnabled = false
 
-    if not character then
+local CurrentWarTarget = nil
+local CurrentRaceTarget = nil
+
+local ActiveTween = nil
+
+--==================================================
+-- CHARACTER FUNCTIONS
+--==================================================
+
+local function GetCharacter(player)
+    if not player then
         return nil, nil, nil
-    end
-
-    local root = character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-
-    if not root or not humanoid then
-        return nil, nil, nil
-    end
-
-    return character, root, humanoid
-end
-
---==================================================
--- PLAYER ROOT
---==================================================
-
-local function getPlayerRoot(player)
-    if not player or player == LocalPlayer then
-        return nil
     end
 
     local character = player.Character
-
     if not character then
-        return nil
-    end
-
-    local root = character:FindFirstChild("HumanoidRootPart")
-
-    if not root then
-        return nil
+        return nil, nil, nil
     end
 
     local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
 
-    if humanoid and humanoid.Health <= 0 then
-        return nil
+    if not humanoid or not root then
+        return nil, nil, nil
     end
 
-    return root
+    if humanoid.Health <= 0 then
+        return nil, nil, nil
+    end
+
+    return character, humanoid, root
+end
+
+local function GetLocalCharacter()
+    return GetCharacter(LocalPlayer)
+end
+
+local function IsValidPlayer(player)
+    if not player or player == LocalPlayer then
+        return false
+    end
+
+    local character, humanoid, root = GetCharacter(player)
+
+    return character ~= nil
+        and humanoid ~= nil
+        and root ~= nil
+        and humanoid.Health > 0
 end
 
 --==================================================
--- CLEANUP
+-- FIND NEAREST PLAYER
 --==================================================
 
-local function releaseCharacter()
-    if currentTween then
-        pcall(function()
-            currentTween:Cancel()
-        end)
-
-        currentTween = nil
-    end
-
-    if currentWeld then
-        pcall(function()
-            currentWeld:Destroy()
-        end)
-
-        currentWeld = nil
-    end
-
-    currentTarget = nil
-
-    local _, root, humanoid = getCharacter()
-
-    if root then
-        root.Anchored = false
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-    end
-
-    if humanoid then
-        humanoid.PlatformStand = false
-    end
-end
-
---==================================================
--- GET NEAREST PLAYER
---==================================================
-
-local function getNearestPlayer()
-    local _, myRoot = getCharacter()
+local function GetNearestPlayer()
+    local _, _, myRoot = GetLocalCharacter()
 
     if not myRoot then
         return nil
@@ -125,15 +93,11 @@ local function getNearestPlayer()
     local nearestDistance = math.huge
 
     for _, player in ipairs(Players:GetPlayers()) do
-
-        if player ~= LocalPlayer then
-
-            local targetRoot = getPlayerRoot(player)
+        if IsValidPlayer(player) then
+            local _, _, targetRoot = GetCharacter(player)
 
             if targetRoot then
-
-                local distance =
-                    (myRoot.Position - targetRoot.Position).Magnitude
+                local distance = (myRoot.Position - targetRoot.Position).Magnitude
 
                 if distance < nearestDistance then
                     nearestDistance = distance
@@ -147,175 +111,88 @@ local function getNearestPlayer()
 end
 
 --==================================================
--- CREATE ATTACHMENT
+-- STOP CURRENT TWEEN
 --==================================================
 
-local function attachToPlayer(targetPlayer)
-    local _, root, humanoid = getCharacter()
+local function CancelTween()
+    if ActiveTween then
+        pcall(function()
+            ActiveTween:Cancel()
+        end)
 
-    if not root or not humanoid then
-        return false
+        ActiveTween = nil
     end
-
-    local targetRoot = getPlayerRoot(targetPlayer)
-
-    if not targetRoot then
-        return false
-    end
-
-    currentTarget = targetPlayer
-
-    -- Put us beside the target
-    root.CFrame =
-        targetRoot.CFrame * CFrame.new(0, 0, -DISTANCE_FROM_PLAYER)
-
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.AssemblyAngularVelocity = Vector3.zero
-
-    humanoid.PlatformStand = true
-
-    -- Attach to target
-    local weld = Instance.new("WeldConstraint")
-
-    weld.Name = "RaceModeWeld"
-    weld.Part0 = root
-    weld.Part1 = targetRoot
-    weld.Parent = root
-
-    currentWeld = weld
-
-    -- Anchor while attached
-    root.Anchored = true
-
-    return true
 end
 
 --==================================================
--- RACE MODE
+-- RESET CHARACTER
 --==================================================
 
-local function startRaceMode()
+local function ResetCharacter()
+    CancelTween()
 
-    if raceEnabled then
-        return
+    local _, humanoid, root = GetLocalCharacter()
+
+    if humanoid then
+        pcall(function()
+            humanoid.PlatformStand = false
+        end)
     end
 
-    raceEnabled = true
-
-    task.spawn(function()
-
-        while raceEnabled do
-
-            local target = getNearestPlayer()
-
-            if not target then
-                currentTarget = nil
-                task.wait(0.5)
-                continue
-            end
-
-            -- Attach to nearest player
-            if not attachToPlayer(target) then
-                task.wait(0.5)
-                continue
-            end
-
-            -- Stay attached forever while target is valid
-            while raceEnabled do
-
-                local targetRoot = getPlayerRoot(target)
-
-                if not targetRoot then
-                    break
-                end
-
-                -- Make sure the weld still exists
-                if not currentWeld or not currentWeld.Parent then
-                    break
-                end
-
-                task.wait(0.2)
-            end
-
-            -- Release current player
-            if currentWeld then
-                pcall(function()
-                    currentWeld:Destroy()
-                end)
-
-                currentWeld = nil
-            end
-
-            local _, root, humanoid = getCharacter()
-
-            if root then
-                root.Anchored = false
-                root.AssemblyLinearVelocity = Vector3.zero
-                root.AssemblyAngularVelocity = Vector3.zero
-            end
-
-            if humanoid then
-                humanoid.PlatformStand = false
-            end
-
-            currentTarget = nil
-
-            -- Immediately find another nearest player
-            task.wait(0.05)
-        end
-
-        releaseCharacter()
-    end)
-end
-
-local function stopRaceMode()
-
-    raceEnabled = false
-
-    releaseCharacter()
+    if root then
+        pcall(function()
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
 end
 
 --==================================================
--- WAR MODE
+-- TWEEN TOWARD PLAYER
 --==================================================
 
-local function tweenToPlayer(targetPlayer)
-
-    if not warEnabled then
+local function TweenTowardPlayer(targetPlayer)
+    if not IsValidPlayer(targetPlayer) then
         return false
     end
 
-    local _, root, humanoid = getCharacter()
+    local _, humanoid, myRoot = GetLocalCharacter()
+    local _, _, targetRoot = GetCharacter(targetPlayer)
 
-    if not root or not humanoid then
+    if not humanoid or not myRoot or not targetRoot then
         return false
     end
 
-    local targetRoot = getPlayerRoot(targetPlayer)
-
-    if not targetRoot then
-        return false
-    end
-
-    currentTarget = targetPlayer
-
+    -- Target's CURRENT position.
+    -- This is intentionally recalculated every update.
     local targetCFrame =
-        targetRoot.CFrame * CFrame.new(0, 0, -DISTANCE_FROM_PLAYER)
+        targetRoot.CFrame * CFrame.new(0, 0, -FOLLOW_DISTANCE)
 
-    local distance =
-        (root.Position - targetCFrame.Position).Magnitude
+    local distance = (myRoot.Position - targetCFrame.Position).Magnitude
 
-    local tweenTime =
-        math.max(distance / TWEEN_SPEED, 0.1)
+    if distance < 1 then
+        return true
+    end
 
-    humanoid.PlatformStand = true
-    root.Anchored = true
+    local tweenTime = math.max(distance / TWEEN_SPEED, 0.03)
 
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.AssemblyAngularVelocity = Vector3.zero
+    -- Keep each tween short so we can constantly
+    -- update the destination when the player moves.
+    tweenTime = math.min(tweenTime, 0.15)
 
-    currentTween = TweenService:Create(
-        root,
+    pcall(function()
+        humanoid.PlatformStand = true
+    end)
+
+    pcall(function()
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+        myRoot.AssemblyAngularVelocity = Vector3.zero
+    end)
+
+    CancelTween()
+
+    ActiveTween = TweenService:Create(
+        myRoot,
         TweenInfo.new(
             tweenTime,
             Enum.EasingStyle.Linear,
@@ -326,158 +203,145 @@ local function tweenToPlayer(targetPlayer)
         }
     )
 
-    currentTween:Play()
-
-    local finished = false
-
-    local connection
-
-    connection = currentTween.Completed:Connect(function()
-        finished = true
-    end)
-
-    while not finished do
-
-        if not warEnabled then
-            currentTween:Cancel()
-
-            connection:Disconnect()
-            currentTween = nil
-
-            root.Anchored = false
-            humanoid.PlatformStand = false
-
-            return false
-        end
-
-        if not getPlayerRoot(targetPlayer) then
-            currentTween:Cancel()
-
-            connection:Disconnect()
-            currentTween = nil
-
-            root.Anchored = false
-            humanoid.PlatformStand = false
-
-            return false
-        end
-
-        task.wait()
-    end
-
-    connection:Disconnect()
-    currentTween = nil
-
-    if not warEnabled then
-        return false
-    end
-
-    targetRoot = getPlayerRoot(targetPlayer)
-
-    if not targetRoot then
-        root.Anchored = false
-        humanoid.PlatformStand = false
-
-        return false
-    end
-
-    root.CFrame =
-        targetRoot.CFrame * CFrame.new(0, 0, -DISTANCE_FROM_PLAYER)
-
-    -- Attach
-    local weld = Instance.new("WeldConstraint")
-
-    weld.Name = "WarModeWeld"
-    weld.Part0 = root
-    weld.Part1 = targetRoot
-    weld.Parent = root
-
-    currentWeld = weld
-
-    root.Anchored = true
-
-    local startTime = os.clock()
-
-    while os.clock() - startTime < ANCHOR_TIME do
-
-        if not warEnabled then
-            break
-        end
-
-        if not getPlayerRoot(targetPlayer) then
-            break
-        end
-
-        task.wait()
-    end
-
-    if currentWeld == weld then
-        currentWeld = nil
-
-        pcall(function()
-            weld:Destroy()
-        end)
-    end
-
-    root.Anchored = false
-
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.AssemblyAngularVelocity = Vector3.zero
-
-    humanoid.PlatformStand = false
-
-    currentTarget = nil
+    ActiveTween:Play()
 
     return true
 end
 
-local function startWarMode()
+--==================================================
+-- WAR MODE
+--==================================================
 
-    if warEnabled then
+local function StartWar()
+    if WarEnabled then
         return
     end
 
-    warEnabled = true
+    -- Make sure RACE is off
+    RaceEnabled = false
+    CurrentRaceTarget = nil
+
+    WarEnabled = true
 
     task.spawn(function()
 
-        local players = {}
+        while WarEnabled do
 
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer then
-                table.insert(players, player)
-            end
-        end
+            local players = {}
 
-        table.sort(players, function(a, b)
-            return a.UserId < b.UserId
-        end)
-
-        for _, player in ipairs(players) do
-
-            if not warEnabled then
-                break
-            end
-
-            if Players:FindFirstChild(player.Name) then
-                tweenToPlayer(player)
-
-                if warEnabled then
-                    task.wait(0.15)
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer then
+                    table.insert(players, player)
                 end
             end
+
+            for _, targetPlayer in ipairs(players) do
+
+                if not WarEnabled then
+                    break
+                end
+
+                if IsValidPlayer(targetPlayer) then
+
+                    CurrentWarTarget = targetPlayer
+
+                    local startTime = tick()
+
+                    -- Continuously follow this player
+                    -- for WAR_FOLLOW_TIME seconds.
+                    while WarEnabled
+                        and IsValidPlayer(targetPlayer)
+                        and (tick() - startTime) < WAR_FOLLOW_TIME do
+
+                        TweenTowardPlayer(targetPlayer)
+
+                        task.wait(UPDATE_INTERVAL)
+                    end
+
+                    CancelTween()
+
+                    CurrentWarTarget = nil
+
+                    -- Small pause before next player
+                    task.wait(0.05)
+                end
+            end
+
+            -- Restart the player list after completing
+            -- the whole cycle.
+            task.wait(0.05)
         end
 
-        warEnabled = false
-        releaseCharacter()
+        CurrentWarTarget = nil
+        ResetCharacter()
     end)
 end
 
-local function stopWarMode()
+local function StopWar()
+    WarEnabled = false
+    CurrentWarTarget = nil
 
-    warEnabled = false
+    CancelTween()
+    ResetCharacter()
+end
 
-    releaseCharacter()
+--==================================================
+-- RACE MODE
+--==================================================
+
+local function StartRace()
+    if RaceEnabled then
+        return
+    end
+
+    -- Make sure WAR is off
+    WarEnabled = false
+    CurrentWarTarget = nil
+
+    RaceEnabled = true
+
+    task.spawn(function()
+
+        -- Find the nearest player ONCE when Race starts.
+        CurrentRaceTarget = GetNearestPlayer()
+
+        while RaceEnabled do
+
+            -- If the current target disappears/dies,
+            -- find another nearest player.
+            if not IsValidPlayer(CurrentRaceTarget) then
+
+                CancelTween()
+
+                CurrentRaceTarget = GetNearestPlayer()
+
+                if not CurrentRaceTarget then
+                    task.wait(0.2)
+                    continue
+                end
+            end
+
+            -- Continuously update the destination
+            -- using the target's CURRENT position.
+            if CurrentRaceTarget then
+                TweenTowardPlayer(CurrentRaceTarget)
+            end
+
+            task.wait(UPDATE_INTERVAL)
+        end
+
+        CurrentRaceTarget = nil
+
+        ResetCharacter()
+    end)
+end
+
+local function StopRace()
+    RaceEnabled = false
+    CurrentRaceTarget = nil
+
+    CancelTween()
+    ResetCharacter()
 end
 
 --==================================================
@@ -485,7 +349,7 @@ end
 --==================================================
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "WarRaceUI"
+ScreenGui.Name = "PlayerMovementUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
@@ -498,13 +362,14 @@ if not ScreenGui.Parent then
 end
 
 --==================================================
--- MAIN
+-- MAIN FRAME
 --==================================================
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 280, 0, 300)
-Main.Position = UDim2.new(0.5, -140, 0.5, -150)
-Main.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+Main.Name = "Main"
+Main.Size = UDim2.fromOffset(390, 250)
+Main.Position = UDim2.new(0.5, -195, 0.5, -125)
+Main.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
 
@@ -512,252 +377,169 @@ local MainCorner = Instance.new("UICorner")
 MainCorner.CornerRadius = UDim.new(0, 10)
 MainCorner.Parent = Main
 
-local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Color3.fromRGB(45, 45, 45)
-MainStroke.Thickness = 1
-MainStroke.Parent = Main
+--==================================================
+-- TITLE BAR
+--==================================================
 
---==================================================
--- TITLE
---==================================================
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 42)
+TitleBar.BackgroundColor3 = Color3.fromRGB(27, 27, 32)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Main
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 10)
+TitleCorner.Parent = TitleBar
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -20, 0, 35)
-Title.Position = UDim2.new(0, 10, 0, 5)
+Title.Size = UDim2.new(1, -20, 1, 0)
+Title.Position = UDim2.fromOffset(10, 0)
 Title.BackgroundTransparency = 1
 Title.Text = "PLAYER MOVEMENT"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextSize = 16
+Title.TextSize = 15
 Title.Font = Enum.Font.GothamBold
 Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = Main
+Title.Parent = TitleBar
 
 --==================================================
--- TAB BUTTONS
+-- TAB BAR
 --==================================================
+
+local TabBar = Instance.new("Frame")
+TabBar.Size = UDim2.new(1, -20, 0, 38)
+TabBar.Position = UDim2.fromOffset(10, 50)
+TabBar.BackgroundTransparency = 1
+TabBar.Parent = Main
 
 local WarTab = Instance.new("TextButton")
-WarTab.Size = UDim2.new(0.5, -12, 0, 32)
-WarTab.Position = UDim2.new(0, 8, 0, 42)
-WarTab.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+WarTab.Size = UDim2.new(0.5, -5, 1, 0)
+WarTab.Position = UDim2.fromOffset(0, 0)
+WarTab.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
 WarTab.BorderSizePixel = 0
 WarTab.Text = "WAR"
 WarTab.TextColor3 = Color3.fromRGB(255, 255, 255)
-WarTab.TextSize = 13
+WarTab.TextSize = 14
 WarTab.Font = Enum.Font.GothamBold
-WarTab.Parent = Main
+WarTab.Parent = TabBar
 
-local WarCorner = Instance.new("UICorner")
-WarCorner.CornerRadius = UDim.new(0, 6)
-WarCorner.Parent = WarTab
+local WarTabCorner = Instance.new("UICorner")
+WarTabCorner.CornerRadius = UDim.new(0, 7)
+WarTabCorner.Parent = WarTab
 
 local RaceTab = Instance.new("TextButton")
-RaceTab.Size = UDim2.new(0.5, -12, 0, 32)
-RaceTab.Position = UDim2.new(0.5, 4, 0, 42)
-RaceTab.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+RaceTab.Size = UDim2.new(0.5, -5, 1, 0)
+RaceTab.Position = UDim2.new(0.5, 5, 0, 0)
+RaceTab.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
 RaceTab.BorderSizePixel = 0
 RaceTab.Text = "RACE"
-RaceTab.TextColor3 = Color3.fromRGB(170, 170, 170)
-RaceTab.TextSize = 13
+RaceTab.TextColor3 = Color3.fromRGB(170, 170, 180)
+RaceTab.TextSize = 14
 RaceTab.Font = Enum.Font.GothamBold
-RaceTab.Parent = Main
+RaceTab.Parent = TabBar
 
-local RaceCorner = Instance.new("UICorner")
-RaceCorner.CornerRadius = UDim.new(0, 6)
-RaceCorner.Parent = RaceTab
-
---==================================================
--- WAR PAGE
---==================================================
-
-local WarPage = Instance.new("Frame")
-WarPage.Size = UDim2.new(1, -16, 1, -85)
-WarPage.Position = UDim2.new(0, 8, 0, 80)
-WarPage.BackgroundTransparency = 1
-WarPage.Parent = Main
+local RaceTabCorner = Instance.new("UICorner")
+RaceTabCorner.CornerRadius = UDim.new(0, 7)
+RaceTabCorner.Parent = RaceTab
 
 --==================================================
--- RACE PAGE
+-- CONTENT
 --==================================================
 
-local RacePage = Instance.new("Frame")
-RacePage.Size = UDim2.new(1, -16, 1, -85)
-RacePage.Position = UDim2.new(0, 8, 0, 80)
-RacePage.BackgroundTransparency = 1
-RacePage.Visible = false
-RacePage.Parent = Main
+local Content = Instance.new("Frame")
+Content.Size = UDim2.new(1, -20, 0, 140)
+Content.Position = UDim2.fromOffset(10, 98)
+Content.BackgroundTransparency = 1
+Content.Parent = Main
 
 --==================================================
--- HELPER
+-- WAR CONTENT
 --==================================================
 
-local function createLabel(parent, text, y)
+local WarContent = Instance.new("Frame")
+WarContent.Size = UDim2.fromScale(1, 1)
+WarContent.BackgroundTransparency = 1
+WarContent.Parent = Content
 
-    local label = Instance.new("TextLabel")
+local WarButton = Instance.new("TextButton")
+WarButton.Size = UDim2.new(1, 0, 0, 45)
+WarButton.Position = UDim2.fromOffset(0, 0)
+WarButton.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+WarButton.BorderSizePixel = 0
+WarButton.Text = "WAR MODE: OFF"
+WarButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+WarButton.TextSize = 14
+WarButton.Font = Enum.Font.GothamBold
+WarButton.Parent = WarContent
 
-    label.Size = UDim2.new(1, -10, 0, 27)
-    label.Position = UDim2.new(0, 5, 0, y)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(200, 200, 200)
-    label.TextSize = 13
-    label.Font = Enum.Font.Gotham
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = parent
+local WarButtonCorner = Instance.new("UICorner")
+WarButtonCorner.CornerRadius = UDim.new(0, 8)
+WarButtonCorner.Parent = WarButton
 
-    return label
-end
+local WarTarget = Instance.new("TextLabel")
+WarTarget.Size = UDim2.new(1, 0, 0, 30)
+WarTarget.Position = UDim2.fromOffset(0, 55)
+WarTarget.BackgroundTransparency = 1
+WarTarget.Text = "TARGET: None"
+WarTarget.TextColor3 = Color3.fromRGB(170, 170, 180)
+WarTarget.TextSize = 13
+WarTarget.Font = Enum.Font.Gotham
+WarTarget.Parent = WarContent
 
-local function createButton(parent, text, y)
-
-    local button = Instance.new("TextButton")
-
-    button.Size = UDim2.new(1, -10, 0, 38)
-    button.Position = UDim2.new(0, 5, 0, y)
-    button.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    button.BorderSizePixel = 0
-    button.Text = text
-    button.TextColor3 = Color3.fromRGB(255, 255, 255)
-    button.TextSize = 13
-    button.Font = Enum.Font.GothamBold
-    button.Parent = parent
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 7)
-    corner.Parent = button
-
-    return button
-end
-
---==================================================
--- WAR UI
---==================================================
-
-local WarStatus = createLabel(
-    WarPage,
-    "Status: OFF",
-    5
-)
-
-local WarTarget = createLabel(
-    WarPage,
-    "Target: None",
-    32
-)
-
-local SpeedLabel = createLabel(
-    WarPage,
-    "Tween Speed: " .. TWEEN_SPEED,
-    59
-)
-
-local SpeedBox = Instance.new("TextBox")
-SpeedBox.Size = UDim2.new(0, 80, 0, 27)
-SpeedBox.Position = UDim2.new(1, -85, 0, 59)
-SpeedBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-SpeedBox.BorderSizePixel = 0
-SpeedBox.Text = tostring(TWEEN_SPEED)
-SpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-SpeedBox.TextSize = 13
-SpeedBox.Font = Enum.Font.Gotham
-SpeedBox.ClearTextOnFocus = false
-SpeedBox.Parent = WarPage
-
-local SpeedCorner = Instance.new("UICorner")
-SpeedCorner.CornerRadius = UDim.new(0, 6)
-SpeedCorner.Parent = SpeedBox
-
-SpeedBox.FocusLost:Connect(function()
-
-    local value = tonumber(SpeedBox.Text)
-
-    if value and value > 0 then
-        TWEEN_SPEED = value
-        SpeedLabel.Text = "Tween Speed: " .. value
-    else
-        SpeedBox.Text = tostring(TWEEN_SPEED)
-    end
-end)
-
-local AnchorLabel = createLabel(
-    WarPage,
-    "Anchor Time: " .. ANCHOR_TIME .. "s",
-    89
-)
-
-local AnchorBox = Instance.new("TextBox")
-AnchorBox.Size = UDim2.new(0, 80, 0, 27)
-AnchorBox.Position = UDim2.new(1, -85, 0, 89)
-AnchorBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-AnchorBox.BorderSizePixel = 0
-AnchorBox.Text = tostring(ANCHOR_TIME)
-AnchorBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-AnchorBox.TextSize = 13
-AnchorBox.Font = Enum.Font.Gotham
-AnchorBox.ClearTextOnFocus = false
-AnchorBox.Parent = WarPage
-
-local AnchorCorner = Instance.new("UICorner")
-AnchorCorner.CornerRadius = UDim.new(0, 6)
-AnchorCorner.Parent = AnchorBox
-
-AnchorBox.FocusLost:Connect(function()
-
-    local value = tonumber(AnchorBox.Text)
-
-    if value and value >= 0 then
-        ANCHOR_TIME = value
-        AnchorLabel.Text = "Anchor Time: " .. value .. "s"
-    else
-        AnchorBox.Text = tostring(ANCHOR_TIME)
-    end
-end)
-
-local WarStart = createButton(
-    WarPage,
-    "START WAR",
-    125
-)
-
-local WarStop = createButton(
-    WarPage,
-    "STOP WAR",
-    169
-)
+local WarInfo = Instance.new("TextLabel")
+WarInfo.Size = UDim2.new(1, 0, 0, 30)
+WarInfo.Position = UDim2.fromOffset(0, 85)
+WarInfo.BackgroundTransparency = 1
+WarInfo.Text = "Follows each player for 2 seconds"
+WarInfo.TextColor3 = Color3.fromRGB(120, 120, 130)
+WarInfo.TextSize = 12
+WarInfo.Font = Enum.Font.Gotham
+WarInfo.Parent = WarContent
 
 --==================================================
--- RACE UI
+-- RACE CONTENT
 --==================================================
 
-local RaceStatus = createLabel(
-    RacePage,
-    "Status: OFF",
-    5
-)
+local RaceContent = Instance.new("Frame")
+RaceContent.Size = UDim2.fromScale(1, 1)
+RaceContent.BackgroundTransparency = 1
+RaceContent.Visible = false
+RaceContent.Parent = Content
 
-local RaceTarget = createLabel(
-    RacePage,
-    "Target: None",
-    32
-)
+local RaceButton = Instance.new("TextButton")
+RaceButton.Size = UDim2.new(1, 0, 0, 45)
+RaceButton.Position = UDim2.fromOffset(0, 0)
+RaceButton.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+RaceButton.BorderSizePixel = 0
+RaceButton.Text = "RACE MODE: OFF"
+RaceButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+RaceButton.TextSize = 14
+RaceButton.Font = Enum.Font.GothamBold
+RaceButton.Parent = RaceContent
 
-local RaceDistance = createLabel(
-    RacePage,
-    "Distance: None",
-    59
-)
+local RaceButtonCorner = Instance.new("UICorner")
+RaceButtonCorner.CornerRadius = UDim.new(0, 8)
+RaceButtonCorner.Parent = RaceButton
 
-local RaceInfo = createLabel(
-    RacePage,
-    "Nearest player • stays attached",
-    86
-)
+local RaceTarget = Instance.new("TextLabel")
+RaceTarget.Size = UDim2.new(1, 0, 0, 30)
+RaceTarget.Position = UDim2.fromOffset(0, 55)
+RaceTarget.BackgroundTransparency = 1
+RaceTarget.Text = "TARGET: None"
+RaceTarget.TextColor3 = Color3.fromRGB(170, 170, 180)
+RaceTarget.TextSize = 13
+RaceTarget.Font = Enum.Font.Gotham
+RaceTarget.Parent = RaceContent
 
-local RaceStart = createButton(
-    RacePage,
-    "RACE MODE: OFF",
-    125
-)
+local RaceInfo = Instance.new("TextLabel")
+RaceInfo.Size = UDim2.new(1, 0, 0, 30)
+RaceInfo.Position = UDim2.fromOffset(0, 85)
+RaceInfo.BackgroundTransparency = 1
+RaceInfo.Text = "Follows nearest player continuously"
+RaceInfo.TextColor3 = Color3.fromRGB(120, 120, 130)
+RaceInfo.TextSize = 12
+RaceInfo.Font = Enum.Font.Gotham
+RaceInfo.Parent = RaceContent
 
 --==================================================
 -- TAB SWITCHING
@@ -765,175 +547,168 @@ local RaceStart = createButton(
 
 WarTab.MouseButton1Click:Connect(function()
 
-    WarPage.Visible = true
-    RacePage.Visible = false
+    WarContent.Visible = true
+    RaceContent.Visible = false
 
-    WarTab.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    WarTab.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
     WarTab.TextColor3 = Color3.fromRGB(255, 255, 255)
 
-    RaceTab.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
-    RaceTab.TextColor3 = Color3.fromRGB(170, 170, 170)
+    RaceTab.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+    RaceTab.TextColor3 = Color3.fromRGB(170, 170, 180)
 end)
 
 RaceTab.MouseButton1Click:Connect(function()
 
-    WarPage.Visible = false
-    RacePage.Visible = true
+    WarContent.Visible = false
+    RaceContent.Visible = true
 
-    RaceTab.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    RaceTab.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
     RaceTab.TextColor3 = Color3.fromRGB(255, 255, 255)
 
-    WarTab.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
-    WarTab.TextColor3 = Color3.fromRGB(170, 170, 170)
+    WarTab.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+    WarTab.TextColor3 = Color3.fromRGB(170, 170, 180)
 end)
 
 --==================================================
--- WAR BUTTONS
+-- WAR BUTTON
 --==================================================
 
-WarStart.MouseButton1Click:Connect(function()
+WarButton.MouseButton1Click:Connect(function()
 
-    if raceEnabled then
-        stopRaceMode()
+    if WarEnabled then
 
-        RaceStatus.Text = "Status: OFF"
-        RaceStart.Text = "RACE MODE: OFF"
+        StopWar()
+
+        WarButton.Text = "WAR MODE: OFF"
+
+    else
+
+        StartWar()
+
+        WarButton.Text = "WAR MODE: ON"
+
     end
-
-    if warEnabled then
-        return
-    end
-
-    WarStatus.Text = "Status: ON"
-
-    startWarMode()
-
-    task.spawn(function()
-
-        while warEnabled do
-
-            if currentTarget then
-                WarTarget.Text =
-                    "Target: " .. currentTarget.Name
-            else
-                WarTarget.Text = "Target: None"
-            end
-
-            task.wait(0.1)
-        end
-
-        WarStatus.Text = "Status: OFF"
-        WarTarget.Text = "Target: None"
-    end)
-end)
-
-WarStop.MouseButton1Click:Connect(function()
-
-    stopWarMode()
-
-    WarStatus.Text = "Status: OFF"
-    WarTarget.Text = "Target: None"
 end)
 
 --==================================================
 -- RACE BUTTON
 --==================================================
 
-RaceStart.MouseButton1Click:Connect(function()
+RaceButton.MouseButton1Click:Connect(function()
 
-    if raceEnabled then
+    if RaceEnabled then
 
-        stopRaceMode()
+        StopRace()
 
-        RaceStatus.Text = "Status: OFF"
-        RaceStart.Text = "RACE MODE: OFF"
-        RaceTarget.Text = "Target: None"
-        RaceDistance.Text = "Distance: None"
+        RaceButton.Text = "RACE MODE: OFF"
 
-        return
+    else
+
+        StartRace()
+
+        RaceButton.Text = "RACE MODE: ON"
+
     end
+end)
 
-    -- Don't allow both modes
-    if warEnabled then
-        stopWarMode()
+--==================================================
+-- LIVE TARGET UI
+--==================================================
 
-        WarStatus.Text = "Status: OFF"
-        WarTarget.Text = "Target: None"
-    end
+task.spawn(function()
 
-    startRaceMode()
+    while ScreenGui.Parent do
 
-    RaceStatus.Text = "Status: ON"
-    RaceStart.Text = "RACE MODE: ON"
+        if WarEnabled then
 
-    task.spawn(function()
+            if CurrentWarTarget and IsValidPlayer(CurrentWarTarget) then
 
-        while raceEnabled do
+                local _, _, myRoot = GetLocalCharacter()
+                local _, _, targetRoot = GetCharacter(CurrentWarTarget)
 
-            if currentTarget then
-
-                RaceTarget.Text =
-                    "Target: " .. currentTarget.Name
-
-                local _, root = getCharacter()
-                local targetRoot =
-                    getPlayerRoot(currentTarget)
-
-                if root and targetRoot then
+                if myRoot and targetRoot then
 
                     local distance =
-                        (root.Position - targetRoot.Position).Magnitude
+                        (myRoot.Position - targetRoot.Position).Magnitude
 
-                    RaceDistance.Text =
-                        "Distance: " ..
-                        string.format("%.1f", distance)
+                    WarTarget.Text =
+                        "TARGET: "
+                        .. CurrentWarTarget.Name
+                        .. "  |  "
+                        .. math.floor(distance)
+                        .. " studs"
+
+                else
+                    WarTarget.Text =
+                        "TARGET: " .. CurrentWarTarget.Name
                 end
 
             else
-
-                RaceTarget.Text = "Target: Searching..."
-                RaceDistance.Text = "Distance: None"
+                WarTarget.Text = "TARGET: Searching..."
             end
 
-            task.wait(0.15)
+        else
+            WarTarget.Text = "TARGET: None"
         end
 
-        RaceStatus.Text = "Status: OFF"
-        RaceStart.Text = "RACE MODE: OFF"
-        RaceTarget.Text = "Target: None"
-        RaceDistance.Text = "Distance: None"
-    end)
+        if RaceEnabled then
+
+            if CurrentRaceTarget and IsValidPlayer(CurrentRaceTarget) then
+
+                local _, _, myRoot = GetLocalCharacter()
+                local _, _, targetRoot = GetCharacter(CurrentRaceTarget)
+
+                if myRoot and targetRoot then
+
+                    local distance =
+                        (myRoot.Position - targetRoot.Position).Magnitude
+
+                    RaceTarget.Text =
+                        "TARGET: "
+                        .. CurrentRaceTarget.Name
+                        .. "  |  "
+                        .. math.floor(distance)
+                        .. " studs"
+
+                else
+                    RaceTarget.Text =
+                        "TARGET: " .. CurrentRaceTarget.Name
+                end
+
+            else
+                RaceTarget.Text = "TARGET: Searching..."
+            end
+
+        else
+            RaceTarget.Text = "TARGET: None"
+        end
+
+        task.wait(0.1)
+    end
 end)
 
 --==================================================
 -- DRAG UI
 --==================================================
 
-local dragging = false
-local dragStart
-local startPosition
+local Dragging = false
+local DragStart = nil
+local StartPosition = nil
 
-Title.InputBegan:Connect(function(input)
+TitleBar.InputBegan:Connect(function(input)
 
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
 
-        dragging = true
-        dragStart = input.Position
-        startPosition = Main.Position
-
-        input.Changed:Connect(function()
-
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
+        Dragging = true
+        DragStart = input.Position
+        StartPosition = Main.Position
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
 
-    if not dragging then
+    if not Dragging then
         return
     end
 
@@ -942,25 +717,38 @@ UserInputService.InputChanged:Connect(function(input)
         return
     end
 
-    local delta = input.Position - dragStart
+    local Delta = input.Position - DragStart
 
     Main.Position = UDim2.new(
-        startPosition.X.Scale,
-        startPosition.X.Offset + delta.X,
-        startPosition.Y.Scale,
-        startPosition.Y.Offset + delta.Y
+        StartPosition.X.Scale,
+        StartPosition.X.Offset + Delta.X,
+        StartPosition.Y.Scale,
+        StartPosition.Y.Offset + Delta.Y
     )
 end)
 
+UserInputService.InputEnded:Connect(function(input)
+
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+
+        Dragging = false
+    end
+end)
+
 --==================================================
--- CHARACTER RESPAWN
+-- CHARACTER RESPAWN HANDLER
 --==================================================
 
 LocalPlayer.CharacterAdded:Connect(function()
 
     task.wait(1)
 
-    if raceEnabled then
-        releaseCharacter()
+    if WarEnabled then
+        CancelTween()
+    elseif RaceEnabled then
+        CancelTween()
     end
 end)
+
+print("Player Movement UI loaded.")
